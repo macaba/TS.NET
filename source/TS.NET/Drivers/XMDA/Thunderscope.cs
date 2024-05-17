@@ -14,7 +14,7 @@ namespace TS.NET.Driver.XMDA
         private ThunderscopeCalibration calibration;
         private bool open = false;
         private ThunderscopeHardwareState hardwareState = new();
-        private ThunderscopeConfiguration configuration = new()
+        private ThunderscopeHardwareConfig configuration = new()
         {
             AdcChannelMode = AdcChannelMode.Quad,
             Channel1 = ThunderscopeChannel.Default(),
@@ -139,7 +139,7 @@ namespace TS.NET.Driver.XMDA
         }
 
         // Returns a by-value copy
-        public ThunderscopeConfiguration GetConfiguration()
+        public ThunderscopeHardwareConfig GetConfiguration()
         {
             return configuration;
         }

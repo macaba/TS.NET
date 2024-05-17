@@ -10,7 +10,7 @@ namespace TS.NET
     public static class ThunderscopeBridgeHeaderExtensions
     {
         // By-value return
-        public unsafe static ThunderscopeChannel GetTriggerChannel(this ThunderscopeConfiguration configuration, TriggerChannel triggerChannel)
+        public unsafe static ThunderscopeChannel GetTriggerChannel(this ThunderscopeHardwareConfig configuration, TriggerChannel triggerChannel)
         {
             return triggerChannel switch
             {
@@ -23,7 +23,7 @@ namespace TS.NET
         }
 
         // By-value return
-        public static ThunderscopeChannel GetChannel(this ref ThunderscopeConfiguration configuration, int channelIndex)
+        public static ThunderscopeChannel GetChannel(this ref ThunderscopeHardwareConfig configuration, int channelIndex)
         {
             // channelIndex is zero-indexed
             return channelIndex switch
@@ -36,7 +36,7 @@ namespace TS.NET
             };
     }
 
-        public static void SetChannel(this ref ThunderscopeConfiguration configuration, ref ThunderscopeChannel channel, int channelIndex)
+        public static void SetChannel(this ref ThunderscopeHardwareConfig configuration, ref ThunderscopeChannel channel, int channelIndex)
         {
             // channelIndex is zero-indexed
             switch (channelIndex)

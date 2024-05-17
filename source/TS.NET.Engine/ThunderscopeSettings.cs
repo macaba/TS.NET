@@ -7,7 +7,7 @@ namespace TS.NET.Engine
     {
         public required string Driver { get; set; }
         public required ushort MaxChannelCount { get; set; }
-        public required ulong MaxChannelDataLength { get; set; }
+        public required uint MaxChannelDataLength { get; set; }
         public required ThunderscopeCalibration Calibration { get; set; }
 
         public static ThunderscopeSettings Default()

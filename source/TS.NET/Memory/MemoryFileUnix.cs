@@ -7,14 +7,14 @@ namespace TS.NET.Memory.Unix
     {
         private const FileAccess FileAccessOption = FileAccess.ReadWrite;
         private const FileShare FileShareOption = FileShare.ReadWrite | FileShare.Delete;
-        private const string Folder = "TS.NET";
+        private const string MapNamePrefix = "TS.NET";
         private const int BufferSize = 0x1000;
         private readonly string file;
 
         internal MemoryFileUnix(string memoryName, ulong bridgeCapacityBytes)
         {
             // https://github.com/dotnet/runtime/blob/main/src/libraries/System.IO.MemoryMappedFiles/src/System/IO/MemoryMappedFiles/MemoryMappedFile.Unix.cs
-            file = Path.Combine("/dev/shm", memoryName);
+            file = Path.Combine("/dev/shm", MapNamePrefix + memoryName);
             FileStream stream;
             if (IsFileInUse(file))
             {
@@ -117,8 +117,15 @@ namespace TS.NET.Memory.Unix
 
         public static bool Exists(string memoryName)
         {
-            var file = Path.Combine("/dev/shm", memoryName);
+            var file = Path.Combine("/dev/shm", MapNamePrefix + memoryName);
             return IsFileInUse(file);
+        }
+
+        public static ulong Size(string memoryName)
+        {
+            var file = Path.Combine("/dev/shm", MapNamePrefix + memoryName);
+            using var stream = new FileStream(file, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Delete, 0x1000);
+            return (ulong)stream.Length;
         }
     }
 }

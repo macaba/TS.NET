@@ -1,19 +1,18 @@
 ﻿using System.IO.MemoryMappedFiles;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 using TS.NET.Memory.Unix;
 using TS.NET.Memory.Windows;
 
 namespace TS.NET
 {
     // This is a shared memory-mapped file between processes, with only a single writer and a single reader with a header struct
-    public class ThunderscopeBridgeReader : IDisposable
+    public class ThunderscopeDataBridgeReader : IDisposable
     {
         private readonly IMemoryFile file;
         private readonly MemoryMappedViewAccessor view;
-        private unsafe byte* basePointer;
-        private unsafe byte* dataPointer { get; }
-        private ThunderscopeBridgeHeader header;
+        private readonly unsafe byte* basePointer;
+        private readonly unsafe byte* dataPointer;
+        private ThunderscopeDataBridgeHeader header;
         private bool IsHeaderSet { get { GetHeader(); return header.Version != 0; } }
         private readonly IInterprocessSemaphoreReleaser dataRequestSemaphore;           // When data is desired, this is signalled to the engine to gather data.
         private readonly IInterprocessSemaphoreWaiter dataResponseSemaphore;            // When this is signalled, data is ready to be consumed.
@@ -22,47 +21,28 @@ namespace TS.NET
         public ReadOnlySpan<sbyte> AcquiredRegionI8 { get { return GetAcquiredRegionI8(); } }
         public ReadOnlySpan<byte> AcquiredRegionU8 { get { return GetAcquiredRegionU8(); } }        // Useful for the Socket API which only accepts byte
 
-        public unsafe ThunderscopeBridgeReader(string memoryName)
+        public unsafe ThunderscopeDataBridgeReader(string memoryName)
         {
-            ulong bridgeCapacityBytes;
             if (OperatingSystem.IsWindows())
             {
                 while (!MemoryFileWindows.Exists(memoryName))
                 {
-                    Console.WriteLine("Waiting for Thunderscope bridge writer...");
+                    Console.WriteLine("Waiting for Thunderscope data bridge writer to create MMF...");
                     Thread.Sleep(1000);
                 }
 
-                ulong dataCapacityBytes = 0;
-                using (var headerReader = new ThunderscopeBridgeHeaderReader(memoryName))
-                {
-                    dataCapacityBytes = headerReader.GetDataCapacityBytes();
-                }
-                bridgeCapacityBytes = (ulong)sizeof(ThunderscopeBridgeHeader) + dataCapacityBytes;
+                file = new MemoryFileWindows(memoryName);
             }
             else
             {
                 while (!MemoryFileUnix.Exists(memoryName))
                 {
-                    Console.WriteLine("Waiting for Thunderscope bridge writer...");
+                    Console.WriteLine("Waiting for Thunderscope data bridge writer to create MMF...");
                     Thread.Sleep(1000);
                 }
 
-                var file = Path.Combine("/dev/shm", memoryName);
-                FileStream stream = new(
-                    file,
-                    FileMode.Open,
-                    FileAccess.ReadWrite,
-                    FileShare.ReadWrite | FileShare.Delete,
-                    0x1000);
-                bridgeCapacityBytes = (ulong)stream.Length;
-                Console.WriteLine($"Bridge capacity in bytes: {bridgeCapacityBytes}");
+                file = new MemoryFileUnix(memoryName, MemoryFileUnix.Size(memoryName));
             }
-
-            // Now open the full bridge connection
-            file = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-                ? new MemoryFileWindows(memoryName, bridgeCapacityBytes)
-                : new MemoryFileUnix(memoryName, bridgeCapacityBytes);
 
             try
             {
@@ -71,15 +51,16 @@ namespace TS.NET
                 try
                 {
                     basePointer = GetPointer();
-                    dataPointer = basePointer + sizeof(ThunderscopeBridgeHeader);
+                    dataPointer = basePointer + sizeof(ThunderscopeDataBridgeHeader);
 
                     while (!IsHeaderSet)
                     {
-                        Console.WriteLine("Waiting for Thunderscope bridge...");
+                        Console.WriteLine("Waiting for Thunderscope data bridge writer to set header...");
                         Thread.Sleep(1000);
                     }
                     GetHeader();
-                    dataRequestSemaphore = InterprocessSemaphore.CreateReleaser(memoryName + ".DataRequest", 1);
+                    //Console.WriteLine($"Bridge capacity: {(ulong)sizeof(ThunderscopeDataBridgeHeader) + header.DataCapacityBytes} bytes");
+                    dataRequestSemaphore = InterprocessSemaphore.CreateReleaser(memoryName + ".DataRequest", 0);
                     dataResponseSemaphore = InterprocessSemaphore.CreateWaiter(memoryName + ".DataResponse", 0);
                 }
                 catch
@@ -103,16 +84,16 @@ namespace TS.NET
             file.Dispose();
         }
 
-        public ThunderscopeConfiguration Configuration
+        public ThunderscopeHardwareConfig Hardware
         {
             get
             {
                 GetHeader();
-                return header.Configuration;
+                return header.Hardware;
             }
         }
 
-        public ThunderscopeProcessing Processing
+        public ThunderscopeProcessingConfig Processing
         {
             get
             {
@@ -121,7 +102,7 @@ namespace TS.NET
             }
         }
 
-        public ThunderscopeMonitoring Monitoring
+        public ThunderscopeDataMonitoring Monitoring
         {
             get
             {
@@ -132,6 +113,11 @@ namespace TS.NET
 
         public bool RequestAndWaitForData(int millisecondsTimeout)
         {
+            // Firstly check if any data has already been loaded
+            var existingData = dataResponseSemaphore.Wait(0);
+            if (existingData)
+                return true;
+
             if (!hasSignaledRequest)
             {
                 // Only signal request once, or we will run up semaphore counter
@@ -203,57 +189,6 @@ namespace TS.NET
                 ThunderscopeMemoryAcquiringRegion.RegionB => dataPointer,                       // If acquiring region is Region B, return Region A
                 _ => throw new InvalidDataException("Enum value not handled, add enum value to switch")
             };
-        }
-    }
-
-    public class ThunderscopeBridgeHeaderReader : IDisposable
-    {
-        private readonly IMemoryFile file;
-        private readonly MemoryMappedViewAccessor view;
-        private readonly ulong dataCapacityBytes;
-
-        public unsafe ThunderscopeBridgeHeaderReader(string memoryName)
-        {
-            file = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-                ? new MemoryFileWindows(memoryName, (ulong)sizeof(ThunderscopeBridgeHeader))
-                : new MemoryFileUnix(memoryName, (ulong)sizeof(ThunderscopeBridgeHeader));
-            try
-            {
-                view = file.MappedFile.CreateViewAccessor(0, 0, MemoryMappedFileAccess.ReadWrite);
-                try
-                {
-                    using (var handle = view.SafeMemoryMappedViewHandle)
-                    {
-                        while (handle.Read<ThunderscopeBridgeHeader>(0).Version == 0)
-                        {
-                            Console.WriteLine("Waiting for Thunderscope bridge writer...");
-                            Thread.Sleep(1000);
-                        }
-                        dataCapacityBytes = view.SafeMemoryMappedViewHandle.Read<ThunderscopeBridgeHeader>(0).DataCapacityBytes;
-                    }
-                }
-                catch
-                {
-                    view.Dispose();
-                    throw;
-                }
-            }
-            catch
-            {
-                file.Dispose();
-                throw;
-            }
-        }
-
-        public ulong GetDataCapacityBytes()
-        {
-            return dataCapacityBytes;
-        }
-
-        public void Dispose()
-        {
-            view.Dispose();
-            file.Dispose();
         }
     }
 }

@@ -3,38 +3,19 @@ using System.Diagnostics;
 
 namespace TS.NET.Engine
 {
-    public class ProcessingTask
+    internal class EngineTask(ILoggerFactory loggerFactory, IThunderscope thunderscope, ThunderscopeSettings settings)
     {
-        private readonly ILogger logger;
-        private readonly ThunderscopeSettings settings;
-        private readonly BlockingChannelReader<InputDataDto> processingChannel;
-        private readonly BlockingChannelWriter<ThunderscopeMemory> inputChannel;
-        private readonly BlockingChannelReader<ProcessingRequestDto> processingRequestChannel;
-        private readonly BlockingChannelWriter<ProcessingResponseDto> processingResponseChannel;
+        private readonly ILogger logger = loggerFactory.CreateLogger(nameof(EngineTask));
+        private readonly IThunderscope thunderscope = thunderscope;
+        private readonly ThunderscopeSettings settings = settings;
 
         private CancellationTokenSource? cancelTokenSource;
         private Task? taskLoop;
 
-        public ProcessingTask(
-            ILoggerFactory loggerFactory,
-            ThunderscopeSettings settings,
-            BlockingChannelReader<InputDataDto> processingChannel,
-            BlockingChannelWriter<ThunderscopeMemory> inputChannel,
-            BlockingChannelReader<ProcessingRequestDto> processingRequestChannel,
-            BlockingChannelWriter<ProcessingResponseDto> processingResponseChannel)
-        {
-            logger = loggerFactory.CreateLogger(nameof(ProcessingTask));
-            this.settings = settings;
-            this.processingChannel = processingChannel;
-            this.inputChannel = inputChannel;
-            this.processingRequestChannel = processingRequestChannel;
-            this.processingResponseChannel = processingResponseChannel;
-        }
-
         public void Start()
         {
             cancelTokenSource = new CancellationTokenSource();
-            taskLoop = Task.Factory.StartNew(() => Loop(logger, settings, processingChannel, inputChannel, processingRequestChannel, processingResponseChannel, cancelTokenSource.Token), TaskCreationOptions.LongRunning);
+            taskLoop = Task.Factory.StartNew(() => Loop(logger, thunderscope, settings, cancelTokenSource.Token), TaskCreationOptions.LongRunning);
         }
 
         public void Stop()
@@ -43,28 +24,34 @@ namespace TS.NET.Engine
             taskLoop?.Wait();
         }
 
-        // The job of this task - pull data from scope driver/simulator, shuffle if 2/4 channels, horizontal sum, trigger, and produce window segments.
         private static void Loop(
             ILogger logger,
+            IThunderscope thunderscope,
             ThunderscopeSettings settings,
-            BlockingChannelReader<InputDataDto> processingInputChannel,
-            BlockingChannelWriter<ThunderscopeMemory> inputChannel,
-            BlockingChannelReader<ProcessingRequestDto> processingRequestChannel,
-            BlockingChannelWriter<ProcessingResponseDto> processingResponseChannel,
             CancellationToken cancelToken)
         {
+            Thread.CurrentThread.Name = nameof(EngineTask);
+            //Thread.CurrentThread.Priority = ThreadPriority.Highest;
             try
             {
-                Thread.CurrentThread.Name = "TS.NET Processing";
+                thunderscope.Start();
+                logger.LogDebug("Started");
+                logger.LogDebug("Waiting for first block of data...");
 
-                // Bridge is cross-process shared memory for the UI to read triggered acquisitions
-                // The trigger point is _always_ in the middle of the channel block, and when the UI sets positive/negative trigger point, it's just moving the UI viewport
+                // Variables for reading
+                Stopwatch readingPeriodicUpdateTimer = Stopwatch.StartNew();
+                uint readCount = 0, periodicReadCount = 0;
+                ThunderscopeMemory memory = new();
+
+                // Variables for processing
                 byte maxChannelDataByteCount = 1;
                 ThunderscopeDataBridgeWriter bridge = new("ThunderScope.1", settings.MaxChannelCount, settings.MaxChannelDataLength, maxChannelDataByteCount);
-
-                ThunderscopeHardwareConfig cachedThunderscopeConfiguration = default;
-
                 // Set some sensible defaults
+                var hardwareConfig = new ThunderscopeHardwareConfig
+                {
+                    AdcChannelMode = AdcChannelMode.Quad
+                };
+                bridge.Hardware = hardwareConfig;
                 var processingConfig = new ThunderscopeProcessingConfig
                 {
                     CurrentChannelCount = settings.MaxChannelCount,
@@ -76,8 +63,6 @@ namespace TS.NET.Engine
                     ChannelDataType = ThunderscopeChannelDataType.Byte
                 };
                 bridge.Processing = processingConfig;
-
-                // Reset monitoring
                 bridge.MonitoringReset();
 
                 // Various buffers allocated once and reused forevermore.
@@ -101,11 +86,9 @@ namespace TS.NET.Engine
                 RisingEdgeTriggerI8 trigger = new(0, -10, processingConfig.CurrentChannelDataLength);
 
                 DateTimeOffset startTime = DateTimeOffset.UtcNow;
-                uint dequeueCounter = 0;
                 uint oneSecondHoldoffCount = 0;
-                uint oneSecondDequeueCount = 0;
                 // HorizontalSumUtility.ToDivisor(horizontalSumLength)
-                Stopwatch periodicUpdateTimer = Stopwatch.StartNew();
+                Stopwatch processingPeriodicUpdateTimer = Stopwatch.StartNew();
 
                 var circularBuffer1 = new ChannelCircularAlignedBufferI8((uint)processingConfig.CurrentChannelDataLength + ThunderscopeMemory.Length);
                 var circularBuffer2 = new ChannelCircularAlignedBufferI8((uint)processingConfig.CurrentChannelDataLength + ThunderscopeMemory.Length);
@@ -128,103 +111,126 @@ namespace TS.NET.Engine
                 bool singleTriggerLatch = false;    // "Latch" because it will reset state back to false automatically. When reset, runTrigger will be set to false.
                 Stopwatch autoTimer = Stopwatch.StartNew();
 
-                logger.LogInformation("Started");
-
                 while (true)
                 {
                     cancelToken.ThrowIfCancellationRequested();
 
-                    // Check for processing requests
-                    if (processingRequestChannel.TryRead(out var request))
+                    //// Check for configuration requests
+                    //if (hardwareRequestChannel.PeekAvailable() != 0)
+                    //{
+                    //    logger.LogDebug("Stop acquisition and process commands...");
+                    //    thunderscope.Stop();
+
+                    //    while (hardwareRequestChannel.TryRead(out var request))
+                    //    {
+                    //        // Do configuration update, pausing acquisition if necessary
+                    //        switch (request)
+                    //        {
+                    //            case HardwareStartRequest hardwareStartRequest:
+                    //                logger.LogDebug("Start request (ignore)");
+                    //                break;
+                    //            case HardwareStopRequest hardwareStopRequest:
+                    //                logger.LogDebug("Stop request (ignore)");
+                    //                break;
+                    //            case HardwareConfigureChannelDto hardwareConfigureChannelDto:
+                    //                var channelIndex = ((HardwareConfigureChannelDto)request).Channel;
+                    //                ThunderscopeChannel channel = thunderscope.GetChannel(channelIndex);
+                    //                switch (request)
+                    //                {
+                    //                    case HardwareSetVoltOffsetRequest hardwareSetOffsetRequest:
+                    //                        logger.LogDebug($"Set offset request: channel {channelIndex} volt offset {hardwareSetOffsetRequest.VoltOffset}");
+                    //                        channel.VoltOffset = hardwareSetOffsetRequest.VoltOffset;
+                    //                        break;
+                    //                    case HardwareSetVoltFullScaleRequest hardwareSetVdivRequest:
+                    //                        logger.LogDebug($"Set vdiv request: channel {channelIndex} volt full scale {hardwareSetVdivRequest.VoltFullScale}");
+                    //                        channel.VoltFullScale = hardwareSetVdivRequest.VoltFullScale;
+                    //                        break;
+                    //                    case HardwareSetBandwidthRequest hardwareSetBandwidthRequest:
+                    //                        logger.LogDebug($"Set bw request: channel {channelIndex} bandwidth {hardwareSetBandwidthRequest.Bandwidth}");
+                    //                        channel.Bandwidth = hardwareSetBandwidthRequest.Bandwidth;
+                    //                        break;
+                    //                    case HardwareSetCouplingRequest hardwareSetCouplingRequest:
+                    //                        logger.LogDebug($"Set coup request: channel {channelIndex} coupling {hardwareSetCouplingRequest.Coupling}");
+                    //                        channel.Coupling = hardwareSetCouplingRequest.Coupling;
+                    //                        break;
+                    //                    case HardwareSetEnabledRequest hardwareSetEnabledRequest:
+                    //                        logger.LogDebug($"Set enabled request: channel {channelIndex} enabled {hardwareSetEnabledRequest.Enabled}");
+                    //                        channel.Enabled = hardwareSetEnabledRequest.Enabled;
+                    //                        break;
+                    //                    default:
+                    //                        logger.LogWarning($"Unknown HardwareConfigureChannelDto: {request}");
+                    //                        break;
+                    //                }
+                    //                thunderscope.SetChannel(channel, channelIndex);
+                    //                break;
+                    //            default:
+                    //                logger.LogWarning($"Unknown HardwareRequestDto: {request}");
+                    //                break;
+                    //        }
+                    //        // Signal back to the sender that config update happened.
+                    //        // hardwareResponseChannel.TryWrite(new HardwareResponseDto(request));
+
+                    //        if (hardwareRequestChannel.PeekAvailable() == 0)
+                    //            Thread.Sleep(150);
+                    //    }
+
+                    //    logger.LogDebug("Start again");
+                    //    thunderscope.Start();
+                    //}
+
+                    while (true)
                     {
-                        switch (request)
+                        try
                         {
-                            case ProcessingStartTriggerDto processingStartTriggerDto:
-                                runTrigger = true;
-                                logger.LogDebug(nameof(ProcessingStartTriggerDto));
-                                break;
-                            case ProcessingStopTriggerDto processingStopTriggerDto:
-                                runTrigger = false;
-                                logger.LogDebug(nameof(ProcessingStopTriggerDto));
-                                break;
-                            case ProcessingForceTriggerDto processingForceTriggerDto:
-                                forceTriggerLatch = true;
-                                logger.LogDebug(nameof(ProcessingForceTriggerDto));
-                                break;
-                            case ProcessingSetTriggerModeDto processingSetTriggerModeDto:
-                                processingConfig.TriggerMode = processingSetTriggerModeDto.Mode;
-                                switch (processingSetTriggerModeDto.Mode)
-                                {
-                                    case TriggerMode.Single:
-                                        singleTriggerLatch = true;
-                                        break;
-                                    case TriggerMode.Auto:
-                                        autoTimer.Restart();
-                                        break;
-                                }
-                                logger.LogDebug(nameof(ProcessingSetTriggerModeDto));
-                                break;
-                            case ProcessingSetDepthDto processingSetDepthDto:
-                                var depth = processingSetDepthDto.Samples;
-                                break;
-                            case ProcessingSetRateDto processingSetRateDto:
-                                var rate = processingSetRateDto.SamplingHz;
-                                break;
-                            case ProcessingSetTriggerSourceDto processingSetTriggerSourceDto:
-                                var channel = processingSetTriggerSourceDto.Channel;
-                                processingConfig.TriggerChannel = channel;
-                                break;
-                            case ProcessingSetTriggerDelayDto processingSetTriggerDelayDto:
-                                var fs = processingSetTriggerDelayDto.Femtoseconds;
-                                break;
-                            case ProcessingSetTriggerLevelDto processingSetTriggerLevelDto:
-                                var requestedTriggerLevel = processingSetTriggerLevelDto.LevelVolts;
-                                // Convert the voltage to Int8
-
-                                var triggerChannel = cachedThunderscopeConfiguration.GetTriggerChannel(processingConfig.TriggerChannel);
-
-                                if (requestedTriggerLevel > triggerChannel.ActualVoltFullScale / 2)
-                                {
-                                    logger.LogWarning($"Could not set trigger level {requestedTriggerLevel}");
-                                    break;
-                                }
-                                if (requestedTriggerLevel < -triggerChannel.ActualVoltFullScale / 2)
-                                {
-                                    logger.LogWarning($"Could not set trigger level {requestedTriggerLevel}");
-                                    break;
-                                }
-
-                                sbyte triggerLevel = (sbyte)((requestedTriggerLevel / (triggerChannel.ActualVoltFullScale / 2)) * 127f);
-
-                                // This validation is for the rising edge trigger...
-                                // i.e. ArmLevel = LTE, TriggerLevel = GT
-                                if (triggerLevel == sbyte.MinValue)
-                                    triggerLevel += 10;     // Coerce so that the trigger arm level is sbyte.MinValue, ensuring a non-zero chance of seeing some waveforms
-                                if (triggerLevel == sbyte.MaxValue)
-                                    triggerLevel -= 1;      // Coerce as the trigger logic is GT, ensuring a non-zero chance of seeing some waveforms
-
-                                logger.LogDebug($"Setting trigger level to {triggerLevel}");
-                                trigger.Reset(triggerLevel, triggerLevel -= 10, processingConfig.CurrentChannelDataLength);
-                                break;
-                            case ProcessingSetTriggerEdgeDirectionDto processingSetTriggerEdgeDirectionDto:
-                                // var edges = processingSetTriggerEdgeDirectionDto.Edges;
-                                break;
-                            default:
-                                logger.LogWarning($"Unknown ProcessingRequestDto: {request}");
-                                break;
+                            thunderscope.Read(memory, cancelToken);
+                            if (readCount == 0)
+                                logger.LogDebug("First block of data received");
+                            //logger.LogDebug($"Acquisition block {enqueueCounter}");
+                            break;
                         }
-
-                        bridge.Processing = processingConfig;
+                        catch (ThunderscopeMemoryOutOfMemoryException)
+                        {
+                            logger.LogWarning("Scope ran out of memory - reset buffer pointers and continue");
+                            ((Driver.XMDA.Thunderscope)thunderscope).ResetBuffer();
+                            continue;
+                        }
+                        catch (ThunderscopeFifoOverflowException)
+                        {
+                            logger.LogWarning("Scope had FIFO overflow - ignore and continue");
+                            continue;
+                        }
+                        catch (ThunderscopeNotRunningException)
+                        {
+                            // logger.LogWarning("Tried to read from stopped scope");
+                            continue;
+                        }
+                        catch (Exception ex)
+                        {
+                            if (ex.Message == "ReadFile - failed (1359)")
+                            {
+                                logger.LogError(ex, $"{nameof(InputTask)} error");
+                                continue;
+                            }
+                            throw;
+                        }
                     }
 
-                    InputDataDto inputDataDto = processingInputChannel.Read(cancelToken);
-                    cachedThunderscopeConfiguration = inputDataDto.Configuration;
-                    bridge.Hardware = inputDataDto.Configuration;
-                    dequeueCounter++;
-                    oneSecondDequeueCount++;
+                    periodicReadCount++;
+                    readCount++;
 
+                    //processingChannel.Write(new InputDataDto(thunderscope.GetConfiguration(), memory), cancelToken);
+
+                    if (readingPeriodicUpdateTimer.ElapsedMilliseconds >= 10000)
+                    {
+                        var enqueuePerSec = periodicReadCount / readingPeriodicUpdateTimer.Elapsed.TotalSeconds;
+                        logger.LogDebug($"MB/sec: {(enqueuePerSec * ThunderscopeMemory.Length / 1000 / 1000):F3}, MiB/sec: {(enqueuePerSec * ThunderscopeMemory.Length / 1024 / 1024):F3}, read count: {readCount}");
+                        readingPeriodicUpdateTimer.Restart();
+                        periodicReadCount = 0;
+                    }
+
+                    // ======== PROCESSING ===========
                     int channelLength = (int)processingConfig.CurrentChannelDataLength;
-                    switch (inputDataDto.Configuration.AdcChannelMode)
+                    switch (hardwareConfig.AdcChannelMode)
                     {
                         // Processing pipeline:
                         // Shuffle (if needed)
@@ -237,25 +243,21 @@ namespace TS.NET.Engine
                             //if (config.HorizontalSumLength != HorizontalSumLength.None)
                             //    throw new NotImplementedException();
                             // Write to circular buffer
-                            circularBuffer1.Write(inputDataDto.Memory.SpanI8);
+                            circularBuffer1.Write(memory.SpanI8);
                             // Trigger
                             if (processingConfig.TriggerChannel != TriggerChannel.None)
                             {
                                 var triggerChannelBuffer = processingConfig.TriggerChannel switch
                                 {
-                                    TriggerChannel.One => inputDataDto.Memory.SpanI8,
+                                    TriggerChannel.One => memory.SpanI8,
                                     _ => throw new ArgumentException("Invalid TriggerChannel value")
                                 };
                                 trigger.ProcessSimd(input: triggerChannelBuffer, triggerIndices: triggerIndices, out uint triggerCount, holdoffEndIndices: holdoffEndIndices, out uint holdoffEndCount);
                             }
-                            // Finished with the memory, return it
-                            inputChannel.Write(inputDataDto.Memory);
                             break;
                         case AdcChannelMode.Dual:
                             // Shuffle
-                            Shuffle.TwoChannels(input: inputDataDto.Memory.SpanI8, output: shuffleBuffer);
-                            // Finished with the memory, return it
-                            inputChannel.Write(inputDataDto.Memory);
+                            Shuffle.TwoChannels(input: memory.SpanI8, output: shuffleBuffer);
                             // Horizontal sum (EDIT: triggering should happen _before_ horizontal sum)
                             //if (config.HorizontalSumLength != HorizontalSumLength.None)
                             //    throw new NotImplementedException();
@@ -276,9 +278,7 @@ namespace TS.NET.Engine
                             break;
                         case AdcChannelMode.Quad:
                             // Shuffle
-                            Shuffle.FourChannels(input: inputDataDto.Memory.SpanI8, output: shuffleBuffer);
-                            // Finished with the memory, return it
-                            inputChannel.Write(inputDataDto.Memory);
+                            Shuffle.FourChannels(input: memory.SpanI8, output: shuffleBuffer);
                             // Horizontal sum (EDIT: triggering should happen _before_ horizontal sum)
                             //if (config.HorizontalSumLength != HorizontalSumLength.None)
                             //    throw new NotImplementedException();
@@ -358,13 +358,11 @@ namespace TS.NET.Engine
                             break;
                     }
 
-                    if (periodicUpdateTimer.ElapsedMilliseconds >= 10000)
+                    if (processingPeriodicUpdateTimer.ElapsedMilliseconds >= 10000)
                     {
-                        logger.LogDebug($"Outstanding frames: {processingInputChannel.PeekAvailable()}, dequeues/sec: {oneSecondDequeueCount / (periodicUpdateTimer.Elapsed.TotalSeconds):F2}, dequeue count: {dequeueCounter}");
-                        logger.LogDebug($"Triggers/sec: {oneSecondHoldoffCount / (periodicUpdateTimer.Elapsed.TotalSeconds):F2}, trigger count: {bridge.Monitoring.TotalAcquisitions}, UI dropped triggers: {bridge.Monitoring.MissedAcquisitions}");
-                        periodicUpdateTimer.Restart();
+                        logger.LogDebug($"Triggers/sec: {oneSecondHoldoffCount / (processingPeriodicUpdateTimer.Elapsed.TotalSeconds):F2}, trigger count: {bridge.Monitoring.TotalAcquisitions}, UI dropped triggers: {bridge.Monitoring.MissedAcquisitions}");
+                        processingPeriodicUpdateTimer.Restart();
                         oneSecondHoldoffCount = 0;
-                        oneSecondDequeueCount = 0;
                     }
                 }
             }
@@ -379,6 +377,7 @@ namespace TS.NET.Engine
             }
             finally
             {
+                thunderscope.Stop();
                 logger.LogDebug("Stopped");
             }
         }

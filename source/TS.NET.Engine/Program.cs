@@ -27,7 +27,7 @@ ThunderscopeSettings settings = ThunderscopeSettings.Default();
 IConfigurationBuilder configurationBuilder = new ConfigurationBuilder()
     .AddJsonFile("appsettings.json");
 var configuration = configurationBuilder.Build();
-var thunderscopeConfiguration = ThunderscopeSettings.FromFile("thunderscope.json");
+var thunderscopeSettings = ThunderscopeSettings.FromFile("thunderscope.json");
 
 var loggerFactory = LoggerFactory.Create(configure =>
 {
@@ -52,7 +52,7 @@ BlockingChannel<ProcessingResponseDto> processingResponseChannel = new();
 Thread.Sleep(1000);
 
 IThunderscope thunderscope;
-switch (thunderscopeConfiguration.Driver.ToLower())
+switch (thunderscopeSettings.Driver.ToLower())
 {
     case "simulator":
         {
@@ -67,26 +67,17 @@ switch (thunderscopeConfiguration.Driver.ToLower())
             if (devices.Count == 0)
                 throw new Exception("No thunderscopes found");
             var ts = new TS.NET.Driver.XMDA.Thunderscope();
-            ts.Open(devices[0], thunderscopeConfiguration.Calibration);
+            ts.Open(devices[0], thunderscopeSettings.Calibration);
             thunderscope = ts;
             break;
         }
     default:
-        throw new ArgumentException($"{thunderscopeConfiguration.Driver} driver not supported");
+        throw new ArgumentException($"{thunderscopeSettings.Driver} driver not supported");
 }
 
 // Start threads
-ProcessingTask processingTask = new(loggerFactory, thunderscopeConfiguration, processingChannel.Reader, inputChannel.Writer, processingRequestChannel.Reader, processingResponseChannel.Writer);
-processingTask.Start();
-
-InputTask inputTask = new(loggerFactory, thunderscope, inputChannel.Reader, processingChannel.Writer, hardwareRequestChannel.Reader, hardwareResponseChannel.Writer);
-inputTask.Start();
-
-WaveformServer waveformServer = new(loggerFactory, thunderscopeConfiguration, IPAddress.Any, 5026, hardwareRequestChannel.Writer, hardwareResponseChannel.Reader, processingRequestChannel.Writer, processingResponseChannel.Reader);
-waveformServer.Start();
-
-ScpiServer scpiServer = new(loggerFactory, IPAddress.Any, 5025, hardwareRequestChannel.Writer, hardwareResponseChannel.Reader, processingRequestChannel.Writer, processingResponseChannel.Reader);
-scpiServer.Start();
+EngineTask processingThread = new(loggerFactory, thunderscope, thunderscopeSettings);
+processingThread.Start();
 
 bool loop = true;
 while (loop)
@@ -99,8 +90,4 @@ while (loop)
             break;
     }
 }
-
-scpiServer.Stop();
-waveformServer.Stop();
-inputTask.Stop();
-processingTask.Stop();
+processingThread.Stop();

@@ -20,6 +20,17 @@ namespace TS.NET.Memory.Windows
                 HandleInheritability.None);
         }
 
+        internal MemoryFileWindows(string memoryName)
+        {
+            if (!OperatingSystem.IsWindows())
+                throw new PlatformNotSupportedException();
+
+            MappedFile = MemoryMappedFile.OpenExisting(
+                mapName: MapNamePrefix + memoryName,
+                MemoryMappedFileRights.ReadWrite,
+                HandleInheritability.None);
+        }
+
         public MemoryMappedFile MappedFile { get; }
 
         public void Dispose()

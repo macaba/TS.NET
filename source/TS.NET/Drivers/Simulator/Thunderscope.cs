@@ -11,9 +11,9 @@
             return new ThunderscopeChannel();
         }
 
-        public ThunderscopeConfiguration GetConfiguration()
+        public ThunderscopeHardwareConfig GetConfiguration()
         {
-            return new ThunderscopeConfiguration() { AdcChannelMode = AdcChannelMode.Quad };
+            return new ThunderscopeHardwareConfig() { AdcChannelMode = AdcChannelMode.Quad };
         }
 
         public void Read(ThunderscopeMemory data, CancellationToken cancellationToken)

@@ -30,7 +30,7 @@ namespace TS.NET.Engine
     internal class WaveformSession : TcpSession
     {
         private readonly ILogger logger;
-        private readonly ThunderscopeBridgeReader bridge;
+        private readonly ThunderscopeDataBridgeReader bridge;
         private readonly CancellationToken cancellationToken;
         private readonly BlockingChannelWriter<HardwareRequestDto> hardwareRequestChannel;
         private readonly BlockingChannelReader<HardwareResponseDto> hardwareResponseChannel;
@@ -41,7 +41,7 @@ namespace TS.NET.Engine
         public WaveformSession(
             TcpServer server,
             ILogger logger,
-            ThunderscopeBridgeReader bridge,
+            ThunderscopeDataBridgeReader bridge,
             CancellationToken cancellationToken,
             BlockingChannelWriter<HardwareRequestDto> hardwareRequestChannel,
             BlockingChannelReader<HardwareResponseDto> hardwareResponseChannel,
@@ -99,7 +99,7 @@ namespace TS.NET.Engine
                 if (bridge.RequestAndWaitForData(500))
                 {
                     //logger.LogDebug("Send waveform...");
-                    var configuration = bridge.Configuration;
+                    var configuration = bridge.Hardware;
                     var processing = bridge.Processing;
                     var data = bridge.AcquiredRegionU8;
 
@@ -172,7 +172,7 @@ namespace TS.NET.Engine
         private readonly BlockingChannelWriter<ProcessingRequestDto> processingRequestChannel;
         private readonly BlockingChannelReader<ProcessingResponseDto> processingResponseChannel;
         private readonly CancellationTokenSource cancellationTokenSource;
-        private readonly ThunderscopeBridgeReader bridge;
+        private readonly ThunderscopeDataBridgeReader bridge;
 
         public WaveformServer(ILoggerFactory loggerFactory,
             ThunderscopeSettings settings,

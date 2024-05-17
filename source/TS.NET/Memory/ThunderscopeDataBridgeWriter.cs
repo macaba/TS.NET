@@ -8,25 +8,27 @@ namespace TS.NET
 {
     // This is a shared memory-mapped file between processes, with only a single writer and a single reader with a header struct
     // Not thread safe
-    public class ThunderscopeBridgeWriter : IDisposable
+    public class ThunderscopeDataBridgeWriter : IDisposable
     {
         private readonly IMemoryFile file;
         private readonly MemoryMappedViewAccessor view;
         private unsafe byte* basePointer;
         private unsafe byte* dataPointer { get; }
-        private ThunderscopeBridgeHeader header;
+        private ThunderscopeDataBridgeHeader header;
         private readonly IInterprocessSemaphoreWaiter dataRequestSemaphore;         // When this is signalled, a consumer (UI or intermediary) has requested data.
         private readonly IInterprocessSemaphoreReleaser dataResponseSemaphore;      // When data has been gathered, this is signalled to the consumer to indicate they can consume data.
+        private bool firstRun = true;           // Data bridge writer will always write an initial waveform, to unblock a UI that was running before Engine was started
         private bool dataRequested = false;
         private bool acquiringRegionFilled = false;
 
         public Span<sbyte> AcquiringRegion { get { return GetAcquiringRegion(); } }
-        public ThunderscopeMonitoring Monitoring { get { return header.Monitoring; } }
+        public ThunderscopeDataMonitoring Monitoring { get { return header.Monitoring; } }
 
-        public unsafe ThunderscopeBridgeWriter(string memoryName, ushort maxChannelCount, ulong maxChannelDataLength, byte maxChannelDataByteCount)
+        public unsafe ThunderscopeDataBridgeWriter(string memoryName, ushort maxChannelCount, uint maxChannelDataLength, byte maxChannelDataByteCount)
         {
             var dataCapacityBytes = maxChannelCount * maxChannelDataLength * maxChannelDataByteCount * 2;   // * 2 as there are 2 regions used in tick-tock fashion
-            var bridgeCapacityBytes = (ulong)sizeof(ThunderscopeBridgeHeader) + dataCapacityBytes;
+            var bridgeCapacityBytes = (ulong)sizeof(ThunderscopeDataBridgeHeader) + dataCapacityBytes;
+            //Console.WriteLine($"Bridge capacity: {bridgeCapacityBytes} bytes");
             file = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
                 ? new MemoryFileWindows(memoryName, bridgeCapacityBytes)
                 : new MemoryFileUnix(memoryName, bridgeCapacityBytes);
@@ -38,17 +40,21 @@ namespace TS.NET
                 try
                 {
                     basePointer = GetPointer();
-                    dataPointer = basePointer + sizeof(ThunderscopeBridgeHeader);
+                    dataPointer = basePointer + sizeof(ThunderscopeDataBridgeHeader);
 
                     // Writer sets initial state of header
                     header.Version = 1;
                     header.DataCapacityBytes = dataCapacityBytes;
+
                     header.MaxChannelCount = maxChannelCount;
                     header.MaxChannelDataLength = maxChannelDataLength;
                     header.MaxChannelDataByteCount = maxChannelDataByteCount;
+
                     header.AcquiringRegion = ThunderscopeMemoryAcquiringRegion.RegionA;
+
                     SetHeader();
-                    dataRequestSemaphore = InterprocessSemaphore.CreateWaiter(memoryName + ".DataRequest", 1);
+
+                    dataRequestSemaphore = InterprocessSemaphore.CreateWaiter(memoryName + ".DataRequest", 0);
                     dataResponseSemaphore = InterprocessSemaphore.CreateReleaser(memoryName + ".DataResponse", 0);
                 }
                 catch
@@ -72,17 +78,17 @@ namespace TS.NET
             file.Dispose();
         }
 
-        public ThunderscopeConfiguration Configuration
+        public ThunderscopeHardwareConfig Hardware
         {
             set
             {
                 // This is a shallow copy, but considering the struct should be 100% blitable (i.e. no reference types), this is effectively a full copy
-                header.Configuration = value;
+                header.Hardware = value;
                 SetHeader();
             }
         }
 
-        public ThunderscopeProcessing Processing
+        public ThunderscopeProcessingConfig Processing
         {
             set
             {
@@ -102,9 +108,10 @@ namespace TS.NET
         public void SwitchRegionIfNeeded()
         {
             if (!dataRequested)
-                dataRequested = dataRequestSemaphore.Wait(0);       // Only wait on the semaphore once and cache the result, clearing when needed later
-            if (dataRequested && acquiringRegionFilled)             // UI has requested data and there is data available to be read...
+                dataRequested = dataRequestSemaphore.Wait(0);           // Only wait on the semaphore once and cache the result if true, clearing when needed later
+            if ((firstRun || dataRequested) && acquiringRegionFilled)   // UI has requested data and there is data available to be read...
             {
+                firstRun = false;
                 dataRequested = false;
                 acquiringRegionFilled = false;
                 header.AcquiringRegion = header.AcquiringRegion switch

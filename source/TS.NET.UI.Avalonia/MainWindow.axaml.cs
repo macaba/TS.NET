@@ -92,7 +92,7 @@ namespace TS.NET.UI.Avalonia
             try
             {
                 uint bufferLength = 4 * 100 * 1000 * 1000;      //Maximum record length = 100M samples per channel
-                ThunderscopeBridgeReader bridge = new("ThunderScope.1");
+                ThunderscopeDataBridgeReader bridge = new("ThunderScope.1");
                 Dispatcher.UIThread.InvokeAsync(() =>
                 {
                     lblStatus.Content = "Bridge connection established";
@@ -134,7 +134,7 @@ namespace TS.NET.UI.Avalonia
                             ResetSeries();
                         }
 
-                        var cfg = bridge.Configuration;
+                        var cfg = bridge.Hardware;
                         var status = $"[Horizontal] Displaying {AddPrefix(viewportLength)} samples of {AddPrefix(channelLength)} [Acquisitions] displayed: {bridge.Monitoring.TotalAcquisitions - bridge.Monitoring.MissedAcquisitions}, missed: {bridge.Monitoring.MissedAcquisitions}, total: {bridge.Monitoring.TotalAcquisitions}";
                         var data = bridge.AcquiredRegionI8;
                         int offset = (int)((channelLength / 2) - (viewportLength / 2));

@@ -14,7 +14,7 @@ namespace TS.NET.Native.BridgeReader
         [UnmanagedCallersOnly(EntryPoint = "init")]
         public static IntPtr Init()
         {
-            ThunderscopeBridgeReader bridgeReader = new("ThunderScope.1");
+            ThunderscopeDataBridgeReader bridgeReader = new("ThunderScope.1");
 
             GCHandle handle = GCHandle.Alloc(bridgeReader, GCHandleType.Pinned);
             return handle.AddrOfPinnedObject();
@@ -26,7 +26,7 @@ namespace TS.NET.Native.BridgeReader
             var handle = GCHandle.FromIntPtr(bridgeReaderPtr);
             if (handle.Target != null)
             {
-                var bridgeReader = (ThunderscopeBridgeReader)handle.Target;
+                var bridgeReader = (ThunderscopeDataBridgeReader)handle.Target;
                 bridgeReader.Dispose();
             }
             handle.Free();   // Free the managed object
@@ -39,7 +39,7 @@ namespace TS.NET.Native.BridgeReader
             var handle = GCHandle.FromIntPtr(bridgeReaderPtr);
             if (handle.Target != null)
             {
-                var bridgeReader = (ThunderscopeBridgeReader)handle.Target;
+                var bridgeReader = (ThunderscopeDataBridgeReader)handle.Target;
                 return bridgeReader.RequestAndWaitForData(millisecondsTimeout);
             }
             return false;
@@ -52,7 +52,7 @@ namespace TS.NET.Native.BridgeReader
             var handle = GCHandle.FromIntPtr(bridgeReaderPtr);
             if (handle.Target != null)
             {
-                var bridgeReader = (ThunderscopeBridgeReader)handle.Target;
+                var bridgeReader = (ThunderscopeDataBridgeReader)handle.Target;
                 var acquiredRegionLength = bridgeReader.AcquiredRegionI8.Length;
                 return acquiredRegionLength;
             }
@@ -68,7 +68,7 @@ namespace TS.NET.Native.BridgeReader
             var handle = GCHandle.FromIntPtr(bridgeReaderPtr);
             if (handle.Target != null)
             {
-                var bridgeReader = (ThunderscopeBridgeReader)handle.Target;
+                var bridgeReader = (ThunderscopeDataBridgeReader)handle.Target;
                 return bridgeReader.GetAcquiredRegionPointer();
             }
             return default;
