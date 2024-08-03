@@ -108,7 +108,7 @@ class Program
             case "litex":
                 {
                     var ts = new TS.NET.Driver.LiteX.Thunderscope();
-                    ts.Open(0, thunderscopeSettings.Calibration.ToDriver(), thunderscopeSettings.HardwareRevision);
+                    ts.Open(0, thunderscopeSettings.Calibration.ToDriver());
                     thunderscope = ts;
                     break;
                 }

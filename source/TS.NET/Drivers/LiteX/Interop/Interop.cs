@@ -4,18 +4,45 @@ namespace TS.NET.Driver.LiteX
 {
     internal static partial class Interop
     {
-        private const string library = "liblitex";
+        private const string library = "tslitex";
         
         [StructLayout(LayoutKind.Sequential)]
         public struct tsChannelParam_t
         {
-            uint volt_scale_mV;     /**< Set full scale voltage in millivolts */
-            int volt_offset_mV;     /**< Set offset voltage in millivolts */
-            uint bandwidth;         /**< Set Bandwidth Filter in MHz. Next highest filter will be selected */
-            byte coupling;          /**< Select AD/DC coupling for channel.  Use tsChannelCoupling_t enum */
-            byte term;              /**< Select Termination mode for channel.  Use tsChannelTerm_t enum */
-            byte active;            /**< Active flag for the channel. 1 to enable, 0 to disable */
-            byte reserved;          /**< Reserved byte for 32-bit alignment*/
+            public uint volt_scale_mV;
+            public int volt_offset_mV;
+            public uint bandwidth;
+            public byte coupling;
+            public byte term;
+            public byte active;
+            public byte reserved;
+        }
+
+        // [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+        // public struct tsDeviceInfo_t
+        // {
+        //     uint deviceID;
+        //     [MarshalAs (UnmanagedType.ByValTStr, SizeConst=256)]
+        //     string devicePath;
+        //     [MarshalAs (UnmanagedType.ByValTStr, SizeConst=256)]
+        //     string identity;
+        //     [MarshalAs (UnmanagedType.ByValTStr, SizeConst=256)]
+        //     string serialNumber;
+        // }
+
+        
+        [StructLayout(LayoutKind.Sequential)]
+        public struct tsScopeState_t
+        {
+            public uint adc_sample_rate;
+            public uint adc_sample_bits;
+            public uint adc_sample_resolution;
+            public uint adc_lost_buffer_count;
+            public uint flags;
+            public uint temp_c;
+            public uint vcc_int;
+            public uint vcc_aux;
+            public uint vcc_bram;
         }
 
         [LibraryImport(library, EntryPoint = "thunderscopeOpen")]
@@ -24,7 +51,28 @@ namespace TS.NET.Driver.LiteX
         [LibraryImport(library, EntryPoint = "thunderscopeClose")]
         public static partial int Close(nint ts);
 
+        // [LibraryImport(library, EntryPoint = "thunderscopeListDevices")]
+        // public static partial int ListDevices(uint devIndex, ref tsDeviceInfo_t devInfo);
+
         [LibraryImport(library, EntryPoint = "thunderscopeChannelConfigGet")]
         public static partial int GetChannelConfig(nint ts, uint channel, ref tsChannelParam_t conf);
+        
+        [LibraryImport(library, EntryPoint = "thunderscopeChannelConfigSet")]
+        public static partial int SetChannelConfig(nint ts, uint channel, ref tsChannelParam_t conf);
+
+        [LibraryImport(library, EntryPoint = "thunderscopeStatusGet")]
+        public static partial int GetStatus(nint ts, ref tsScopeState_t conf);
+
+        [LibraryImport(library, EntryPoint = "thunderscopeSampleModeSet")]
+        public static partial int SetSampleMode(nint ts, uint rate, uint resolution);
+
+        [LibraryImport(library, EntryPoint = "thunderscopeCalibrationSet")]
+        public static partial int SetCalibration(nint ts, uint channel, uint cal);
+
+        [LibraryImport(library, EntryPoint = "thunderscopeDataEnable")]
+        public static partial int DataEnable(nint ts, byte enable);
+
+        [LibraryImport(library, EntryPoint = "thunderscopeRead")]
+        public static unsafe partial int Read(nint ts, byte* buffer, uint len);
     }
 }
